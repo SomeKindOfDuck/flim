@@ -1,0 +1,27 @@
+[project]
+name = "flim"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastparquet>=2026.3.0",
+    "matplotlib>=3.10.8",
+    "numpy>=2.4.4",
+    "pandas>=3.0.2",
+    "pydub>=0.25.1",
+    "pywavelet>=0.2.10",
+    "scipy>=1.17.1",
+    "torch>=2.11.0",
+]
+
+[build-system]
+requires = ["uv_build"]
+build-backend = "uv_build"
+
+[project.scripts]
+stat-init = "flim.sim.stat.init:main"
+stat-run = "flim.sim.stat.run:main"
+stat-train = "flim.sim.stat.train:main"
+stat-test = "flim.sim.stat.test:main"
+stat-extract = "flim.sim.stat.extract_latent_activity:main"

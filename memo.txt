@@ -1,0 +1,10 @@
+260422
+以下のノイズ条件の個体データを確認する
++ nomodelnoise: (shift 7 0 (blur 1 1 & 2 0.5))
++ unscaled: (sigma 0.5 0 (shift 5 0 blur 2 1 & shift 7 0 blur 3 1))
++ scaled: (shift 5 0 blur 2.0 0.0; shift 7 0 blur 2.0 0.5)
+
+260512
++ nomodelnoise: (shift 7 0 (blur 1 1 & 2 0.5 & 2 1)): モデルノイズはなくても結果が再現できるので不要！
++ モデルのノイズパラメータごとにヒートマップを書いてもよさそう。
+  + shift 0 3 7, sigma: 0 0.5 1 1.5 2 2.5 3
