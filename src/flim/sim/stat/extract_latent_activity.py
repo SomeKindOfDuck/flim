@@ -50,10 +50,10 @@ def build_dataset_from_config(config: Dict[str, Any]):
     rep = 5
 
     datalist = []
-    datalist += generate_asynchronous_dataset([4, 14], rep=rep, vsft=vsft, asft=asft)
-    datalist += generate_visual_dataset([4, 9, 14], rep=rep, vsft=vsft)
+    datalist += generate_asynchronous_dataset([1, 4, 14, 17], rep=rep, vsft=vsft, asft=asft)
+    datalist += generate_visual_dataset([4, 6, 9, 12, 14], rep=rep, vsft=vsft)
     datalist += generate_audio_dataset([4, 9, 14], rep=rep, asft=asft)
-    datalist += generate_synchronous_dataset([4, 9, 14], rep=rep, vsft=vsft, asft=asft)
+    datalist += generate_synchronous_dataset([4, 6, 9, 12, 14], rep=rep, vsft=vsft, asft=asft)
 
     if vblur > 0 or ablur > 0:
         dataset = gaussian_smoothing(datalist, vblur, ablur)
