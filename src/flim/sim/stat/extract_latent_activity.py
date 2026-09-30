@@ -16,7 +16,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from flim.sim.stat import spawn_model
+from flim.sim.stat import agent_seed, set_seed, spawn_model
 from flim.stimgen import (_N, FLKLDataset, gaussian_smoothing,
                           generate_asynchronous_dataset,
                           generate_audio_dataset, generate_synchronous_dataset,
@@ -31,32 +31,48 @@ def parse_args():
         description="Extract all-trial activities and save each variable as a separate WIDE-format file."
     )
     p.add_argument("config", help="Path to config json (single file).")
+    p.add_argument("--rep", type=int, default=5, help="Number of trials per stimulus condition (--design uniform).")
+    p.add_argument("--design", choices=["uniform", "mouse"], default="uniform",
+                   help="uniform: every condition has --rep trials. mouse: same as the 2p sessions "
+                        "(30 trials for visual-only / synchronous 12 and 14 Hz, 20 for the others; 380 in total).")
     return p.parse_args()
 
 
-def build_dataset_from_config(config: Dict[str, Any]):
-    test_config = config["test"]
+# マウスの 2p 計測のセッション(G13M3 / G12M0 2026-06-04、G12M2 2026-09-15)と同じ試行数
+# 報酬と結びついた刺激(光が 9 Hz より高い visual-only / synchronous)は 30 回、ほかは 20 回
+MOUSE_DESIGN = {
+    "asynchronous": {1: 20, 4: 20, 14: 20, 17: 20},
+    "visual": {4: 20, 6: 20, 9: 20, 12: 30, 14: 30},
+    "audio": {4: 20, 9: 20, 14: 20},
+    "synchronous": {4: 20, 6: 20, 9: 20, 12: 30, 14: 30},
+}
+
+
+def build_dataset_from_config(config: Dict[str, Any], rep: int = 5, design: str = "uniform"):
     noise = config.get("noise", {})
 
-    # vsft = noise.get("visual-shift")
-    # asft = noise.get("audio-shift")
-    vsft = 0
-    asft = 0
+    # 学習と同じ入力(パルスの時間のずれと gaussian blur)にする
+    vsft = noise.get("visual-shift", 0)
+    asft = noise.get("audio-shift", 0)
     vblur = noise.get("visual-blur", 0)
     ablur = noise.get("audio-blur", 0)
-    # vblur = 0
-    # ablur = 0
 
-    rep = 5
+    if design == "mouse":
+        counts = MOUSE_DESIGN
+    else:
+        counts = {k: {f: rep for f in v} for k, v in MOUSE_DESIGN.items()}
 
     datalist = []
-    datalist += generate_asynchronous_dataset([1, 4, 14, 17], rep=rep, vsft=vsft, asft=asft)
-    datalist += generate_visual_dataset([4, 6, 9, 12, 14], rep=rep, vsft=vsft)
-    datalist += generate_audio_dataset([4, 9, 14], rep=rep, asft=asft)
-    datalist += generate_synchronous_dataset([4, 6, 9, 12, 14], rep=rep, vsft=vsft, asft=asft)
+    for f, n in counts["asynchronous"].items():
+        datalist += generate_asynchronous_dataset([f], rep=n, vsft=vsft, asft=asft)
+    for f, n in counts["visual"].items():
+        datalist += generate_visual_dataset([f], rep=n, vsft=vsft)
+    for f, n in counts["audio"].items():
+        datalist += generate_audio_dataset([f], rep=n, asft=asft)
+    for f, n in counts["synchronous"].items():
+        datalist += generate_synchronous_dataset([f], rep=n, vsft=vsft, asft=asft)
 
-    if vblur > 0 or ablur > 0:
-        dataset = gaussian_smoothing(datalist, vblur, ablur)
+    datalist = gaussian_smoothing(datalist, vblur, ablur)
 
     return FLKLDataset(datalist)
 
@@ -70,7 +86,7 @@ def extract_trial_arrays(
     Returns:
       - collapsed inputs: vobs_sum, aobs_sum (T,)
       - VAE unit activities (h only): enc_v_h, enc_a_h, enc_cross_h, dec_*_h* (T, D)
-      - latent: z (T, Z)
+      - latent: z (T, Z)、事後分布の平均 z_mu と対数分散 z_logvar (T, Z)
       - collapsed recon: v_recon_sum, a_recon_sum (T,)
       - RNN: gru_h (T, H), reward_logit, reward_pred (T,)
     """
@@ -78,7 +94,7 @@ def extract_trial_arrays(
     enc = cmvae.encoder
     dec = cmvae.decoder
 
-    enc_v_h, enc_a_h, enc_cross_h, z_list = [], [], [], []
+    enc_v_h, enc_a_h, enc_cross_h, z_list, mu_list, logvar_list = [], [], [], [], [], []
     dec_v_h1, dec_v_h2, dec_a_h1, dec_a_h2 = [], [], [], []
 
     v_recon_sum = np.zeros(T, dtype=np.float32)
@@ -93,7 +109,9 @@ def extract_trial_arrays(
         ch = F.relu(enc.hidden(torch.cat((vh, ah), dim=1)))
 
         mu = enc.mu(ch)
-        sigma = F.softplus(enc.sigma(ch))
+        sigma = enc.sigma(ch)  # 対数分散(model/prcpt.py の _CMVAEEncoder と同じ)
+        if getattr(enc, "logvar_softplus", False):
+            sigma = F.softplus(sigma)
         eps = torch.randn_like(mu)
         z = mu + sigma.div(2).exp() * eps
 
@@ -109,6 +127,8 @@ def extract_trial_arrays(
         enc_a_h.append(ah.squeeze(0).numpy())
         enc_cross_h.append(ch.squeeze(0).numpy())
         z_list.append(z.squeeze(0).numpy())
+        mu_list.append(mu.squeeze(0).numpy())
+        logvar_list.append(sigma.squeeze(0).numpy())
 
         dec_v_h1.append(dvh1.squeeze(0).numpy())
         dec_v_h2.append(dvh2.squeeze(0).numpy())
@@ -132,6 +152,8 @@ def extract_trial_arrays(
         "enc_a_h": np.stack(enc_a_h, axis=0).astype(np.float32),
         "enc_cross_h": np.stack(enc_cross_h, axis=0).astype(np.float32),
         "z": z_arr,
+        "z_mu": np.stack(mu_list, axis=0).astype(np.float32),
+        "z_logvar": np.stack(logvar_list, axis=0).astype(np.float32),
         "dec_v_h1": np.stack(dec_v_h1, axis=0).astype(np.float32),
         "dec_v_h2": np.stack(dec_v_h2, axis=0).astype(np.float32),
         "dec_a_h1": np.stack(dec_a_h1, axis=0).astype(np.float32),
@@ -225,6 +247,16 @@ def variable_specs():
             "submodule": "latent",
             "name": "z",
         },
+        "z_mu": {
+            "module": "CMVAE",
+            "submodule": "latent-mu",
+            "name": "z_mu",
+        },
+        "z_logvar": {
+            "module": "CMVAE",
+            "submodule": "latent-logvar",
+            "name": "z_logvar",
+        },
         "dec_v_h1": {
             "module": "CMVAE",
             "submodule": "visual-decoder-1",
@@ -286,7 +318,13 @@ def main():
     cmvae.to(DEVICE).eval()
     grup.to(DEVICE).eval()
 
-    dataset = build_dataset_from_config(config)
+    # エージェントごとに別の種(学習の種と重ならないようにずらす)。全エージェントで同じ種にすると z のノイズが共通になる
+    seed = agent_seed(config) + 1
+    set_seed(seed)
+    print(f"[OK] Random seed   : {seed}")
+
+    dataset = build_dataset_from_config(config, rep=args.rep, design=args.design)
+    print(f"[OK] Trials        : {len(dataset)} ({args.design})")
     loader = DataLoader(dataset, batch_size=1, shuffle=False, num_workers=0)
 
     specs = variable_specs()
@@ -297,6 +335,8 @@ def main():
         "enc_a_h": [],
         "enc_cross_h": [],
         "z": [],
+        "z_mu": [],
+        "z_logvar": [],
         "dec_v_h1": [],
         "dec_v_h2": [],
         "dec_a_h1": [],
@@ -334,6 +374,8 @@ def main():
             "enc_a_h",
             "enc_cross_h",
             "z",
+            "z_mu",
+            "z_logvar",
             "dec_v_h1",
             "dec_v_h2",
             "dec_a_h1",
