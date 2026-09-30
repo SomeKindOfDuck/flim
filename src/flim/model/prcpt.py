@@ -28,9 +28,9 @@ class _SingleVAEEncoder(nn.Module):
         visual_h = f.relu(self.visual_hidden(visual_h))
         audio_h = f.relu(self.audio_hidden(audio_h))
         visual_mu = self.visual_mu(visual_h)
-        visual_sigma = f.softplus(self.visual_sigma(visual_h))
+        visual_sigma = self.visual_sigma(visual_h)  # 対数分散
         audio_mu = self.visual_mu(audio_h)
-        audio_sigma = f.softplus(self.visual_sigma(audio_h))
+        audio_sigma = self.visual_sigma(audio_h)  # 対数分散
         visual_z = self.reparametarize(visual_mu, visual_sigma)
         audio_z = self.reparametarize(audio_mu, audio_sigma)
         return visual_z, audio_z, visual_mu, visual_sigma, audio_mu, audio_sigma
@@ -69,10 +69,12 @@ class SinglwModalVAE(nn.Module):
 
 
 class _CMVAEEncoder(nn.Module):
-    def __init__(self, input_dim, hidden_dim1, hidden_dim2, z_dim, sigma_v, sigma_a):
+    def __init__(self, input_dim, hidden_dim1, hidden_dim2, z_dim, sigma_v, sigma_a, logvar_softplus=False):
         super().__init__()
         self.sigma_v = sigma_v
         self.sigma_a = sigma_a
+        # True なら以前の実装(対数分散に softplus をかける = 事後分布の分散が 1 以上に制限される)を再現する
+        self.logvar_softplus = logvar_softplus
         self.visual_in = nn.Linear(input_dim, hidden_dim1)
         self.audio_in = nn.Linear(input_dim, hidden_dim1)
         self.hidden = nn.Linear(hidden_dim1 * 2, hidden_dim2)
@@ -96,7 +98,11 @@ class _CMVAEEncoder(nn.Module):
             audio_h = audio_h + torch.randn_like(audio_h) * self.sigma_a
         cross_h = f.relu(self.hidden(torch.cat((visual_h, audio_h), dim=1)))
         mu = self.mu(cross_h)
-        sigma = f.softplus(self.sigma(cross_h))
+        # sigma は事後分布の対数分散。softplus を通すと対数分散が 0 以上(分散が 1 以上)に制限され、
+        # 事後分布が事前分布 N(0, 1) より狭くなれないので、制約をかけずにそのまま使う
+        sigma = self.sigma(cross_h)
+        if self.logvar_softplus:
+            sigma = f.softplus(sigma)
         z = self.reparametarize(mu, sigma)
         return z, mu, sigma
 
@@ -122,9 +128,9 @@ class _CMVAEDecoder(nn.Module):
 
 
 class CrossModalVAE(nn.Module):
-    def __init__(self, input_dim, hidden_dim1, hidden_dim2, z_dim, sigma_v, sigma_a):
+    def __init__(self, input_dim, hidden_dim1, hidden_dim2, z_dim, sigma_v, sigma_a, logvar_softplus=False):
         super().__init__()
-        self.encoder = _CMVAEEncoder(input_dim, hidden_dim1, hidden_dim2, z_dim, sigma_v, sigma_a)
+        self.encoder = _CMVAEEncoder(input_dim, hidden_dim1, hidden_dim2, z_dim, sigma_v, sigma_a, logvar_softplus)
         self.decoder = _CMVAEDecoder(z_dim, hidden_dim2, hidden_dim1, input_dim)
 
     def forward(self, visual_in, audio_in):
@@ -153,7 +159,7 @@ class _LDVAEEncoder(nn.Module):
         cross_h = f.relu(self.hidden(torch.cat((visual_h, audio_h), dim=1)))
         rnn_h = f.relu(self.rnn(cross_h))
         mu = self.mu(cross_h)
-        sigma = f.softplus(self.sigma(cross_h))
+        sigma = self.sigma(cross_h)  # 対数分散
         z = self.reparametarize(mu, sigma)
         return z, mu, sigma
 
@@ -213,6 +219,7 @@ class LatentDynamicPredictor(nn.Module):
 
 
 def kl_to_prior_loss(mu, sigma):
+    # sigma は対数分散
     q = d.Normal(mu, sigma.div(2).exp())
     kl_loss = torch.sum(d.kl_divergence(q, STDNORM))
     return kl_loss

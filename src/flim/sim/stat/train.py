@@ -101,7 +101,7 @@ def main():
         epoch = args.epoch
         log_content = {}
         print(f"Start training with {mess[0:-2]} flickrs for {epoch} epochs.")
-        train_log = train(cmvae, reward_predictor, train_loader, test_loader, epoch, lr)
+        train_log = train(cmvae, reward_predictor, train_loader, test_loader, epoch, lr, config["model"].get("kl-beta", 1.0))
         log_content["epoch"] = epoch
         log_content["lr"] = lr
         print(f"Training complete. Results saved to {result_dir}")

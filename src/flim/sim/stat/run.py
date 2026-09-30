@@ -13,7 +13,7 @@ from torch.utils.data import DataLoader
 import flim.sim.stat.logplot as plt
 from flim import append_training_log, name_savedir
 from flim.model.bhv import GRURewardPredictor
-from flim.sim.stat import average_across_loader, spawn_model, train
+from flim.sim.stat import average_across_loader, set_seed, spawn_model, train
 from flim.stimgen import (_N, FLKLDataset, gaussian_smoothing,
                           generate_asynchronous_dataset,
                           generate_audio_dataset, generate_synchronous_dataset,
@@ -38,6 +38,10 @@ def main():
 
         run_id = config.get("id")
         experiment_id = config.get("experiment")
+
+        if config.get("seed") is not None:
+            set_seed(int(config["seed"]))
+            print(f"Random seed: {config['seed']}")
 
         cmvae, reward_predictor = spawn_model(run_id, config)
         lr = config["model"]["lr"]
@@ -99,7 +103,7 @@ def main():
             log_content = {}
             if not args.eval:
                 print(f"Start training with {mess[0:-2]} flickrs for {epoch} epochs.")
-                train_log = train(cmvae, reward_predictor, train_loader, test_loader, epoch, lr)
+                train_log = train(cmvae, reward_predictor, train_loader, test_loader, epoch, lr, config["model"].get("kl-beta", 1.0))
                 log_content["epoch"] = epoch
                 log_content["lr"] = lr
                 print(f"Training complete. Results saved to {result_dir}")

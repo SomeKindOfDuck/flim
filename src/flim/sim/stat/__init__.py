@@ -7,6 +7,29 @@ from torch.utils.data import DataLoader
 from flim import fmt_2dig
 
 
+def agent_seed(config: dict) -> int:
+    """
+    エージェントの乱数の種。設定に "seed" があればそれを、なければ id から決まる値を使う
+    """
+    import zlib
+
+    seed = config.get("seed")
+    if seed is None:
+        seed = zlib.crc32(str(config.get("id")).encode()) % (2 ** 31)
+    return int(seed)
+
+
+def set_seed(seed: int):
+    import random
+
+    import numpy as np
+    import torch
+
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+
 def spawn_model(id: str, config: dict):
     """
     dictで読み込んだ設定ファイル（config.yaml）から、訓練済みのモデルがあればロードし、なければ初期化する
@@ -28,10 +51,12 @@ def spawn_model(id: str, config: dict):
     vae_z = mconf["CMVAE-Latent"]
     sigma_v = mconf.get("sigma_v", 0.)
     sigma_a = mconf.get("sigma_a", 0.)
+    # 項目がない設定(2026-09-28 より前に学習したエージェント)は以前の実装(softplus あり)で学習されているので True とみなす
+    logvar_softplus = mconf.get("latent-logvar-softplus", True)
     rew_rnn_h = mconf["RewardRNN"]
 
-    cmvae = CrossModalVAE(I, vae_h1, vae_h2, vae_z, sigma_v, sigma_a)
-    reward_predictor = GRURewardPredictor(vae_z, rew_rnn_h)
+    cmvae = CrossModalVAE(I, vae_h1, vae_h2, vae_z, sigma_v, sigma_a, logvar_softplus)
+    reward_predictor = GRURewardPredictor(vae_z, rew_rnn_h, chrono_tmax=mconf.get("gru-chrono-tmax"))
 
     experiment_id = config.get("experiment")
     if experiment_id is not None:
@@ -50,7 +75,10 @@ def spawn_model(id: str, config: dict):
     return cmvae, reward_predictor
 
 
-def train(cmvae, reward_predictor, train_loader, test_loader, epoch: int, lr: float):
+def train(cmvae, reward_predictor, train_loader, test_loader, epoch: int, lr: float, kl_beta: float = 1.0):
+    """
+    kl_beta: KL 項の重み(β-VAE)。1.0 なら通常の VAE。表示する KL は重みをかける前の値
+    """
     import torch
     from torch.utils.data import DataLoader, random_split
 
@@ -85,7 +113,7 @@ def train(cmvae, reward_predictor, train_loader, test_loader, epoch: int, lr: fl
             loss_vis, loss_aud = cmvae_reconstruction_loss(vobs, aobs, visual_out, audio_out)
             loss_kl = kl_to_prior_loss(mu, sigma)
             loss_rpe = reward_loss(reward_out, robs)
-            loss_total = loss_vis + loss_aud + loss_kl + loss_rpe
+            loss_total = loss_vis + loss_aud + kl_beta * loss_kl + loss_rpe
 
             optimizer.zero_grad()
             loss_total.backward()
@@ -107,7 +135,7 @@ def train(cmvae, reward_predictor, train_loader, test_loader, epoch: int, lr: fl
                 loss_vis, loss_aud = cmvae_reconstruction_loss(vobs, aobs, visual_out, audio_out)
                 loss_kl = kl_to_prior_loss(mu, sigma)
                 loss_rpe = reward_loss(reward_out, robs)
-                loss_total = loss_vis + loss_aud + loss_kl + loss_rpe
+                loss_total = loss_vis + loss_aud + kl_beta * loss_kl + loss_rpe
 
                 history["val-loss"].append(float(loss_total))
 
